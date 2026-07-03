@@ -30,4 +30,8 @@ To ensure speed and predictability for a user-facing tool, the architecture spli
 3. *The Multi-Modal Prompt Chain:* The image and page context flow sequentially through 7 optimized AI steps.
 4. *Binary Compilation:* Python takes the final validated JSON tag structure and injects it back natively into the original document binary using PyMuPDF.
 
+## Workflow Execution Summary
+
+When a user uploads an individual PDF document, the platform initializes pdf_processor.py to decouple structural layers. Page content is streamed into ai_pipeline.py where the 7-prompt sequence analyzes layout matrices, executes OCR corrective operations, patches header cascades, and formats tables. The resulting tag structure map is compiled and written back into the PDF binary wrapper, generating a compliant download link instantly.
+
 ---
