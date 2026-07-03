@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 LLM_API_URL: str = os.environ.get(
     "LLM_API_URL", "https://api.openai.com/v1/chat/completions"
 )
-LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "")
+LLM_API_KEY: str = os.environ.get("LLM_API_KEY", "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")
 LLM_MODEL: str = os.environ.get("LLM_MODEL", "gpt-4o")
 
 MAX_FILE_SIZE_MB: int = int(os.environ.get("MAX_FILE_SIZE_MB", "50"))
