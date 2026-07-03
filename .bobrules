@@ -1,0 +1,18 @@
+
+# IBM Bob Custom Rules for PDF Remediation System
+
+## Tech Stack Constraints
+- Python 3.11+
+- Primary PDF Library: `PyMuPDF` (fitz) for structural tagging and binary injection.
+- Visual Manipulation: `pdf2image` and `Pillow`.
+- API Client: Async-capable implementation using `httpx`.
+
+## Architecture Principles
+1. **Stateless Processing with Context Passing:** Pages must be processed sequentially, but a global state dictionary (tracking ongoing tables, parent headings) must be passed to maintain consistency across page bounds.
+2. **Deterministic Overrides:** Never rely on the LLM to calculate absolute pixel math. Let the Python layer handle precise bounding box matrix alignment.
+3. **No Code Blocks in AI Output:** All system prompts must enforce strict JSON responses without markdown code fences (` json `) to simplify API decoding.
+
+## Error Handling
+- Every API call must implement an exponential backoff retry strategy.
+- If an LLM response fails validation against the structural JSON schema, automatically fall back to the raw deterministic text layout layer.
+
