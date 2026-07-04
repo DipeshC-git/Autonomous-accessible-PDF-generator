@@ -5,6 +5,7 @@ import json
 import io
 import os
 import time
+import datetime
 from fitz import open as open_pdf  # PyMuPDF
 
 # --- CONFIGURATION ---
@@ -94,20 +95,38 @@ PROMPTS = {
     ),
     "Step 3.5: Metadata & Bookmarks": (
         "You are a PDF metadata and navigation engineer. Using the completed Tag Tree from Step 3 "
-        "and the full document text from Step 2, perform two tasks: "
+        "and the full document text from Step 2, perform two tasks. "
+        "IMPORTANT: Every metadata field is required. Never output null or an empty string for "
+        "any field — always derive the best possible value from the document content. "
         "\n\n"
         "TASK A — DOCUMENT METADATA: "
-        "Derive and output the following metadata fields from the document content itself: "
-        "title (infer from the first prominent H1 or cover-page text), "
-        "subject (one-sentence description of what the document covers), "
-        "keywords (5–10 comma-separated terms extracted from headings and key concepts), "
-        "language (ISO 639-1 code, e.g. 'en'), "
-        "author (extract if visible in the document, otherwise leave empty string). "
+        "Output a 'metadata' JSON object with ALL of the following fields: "
+        "\n"
+        "title: The document's main title. Look for the largest or most prominent text on the "
+        "first page, the first H1 heading, or any text styled as a cover title. "
+        "If none is clearly a title, synthesise a descriptive title from the subject matter. "
+        "Never leave blank. "
+        "\n"
+        "author: The name(s) of the author(s) or organisation. Look for bylines, 'Prepared by', "
+        "'Written by', 'Author:', or footer/header attribution text. "
+        "If not found in the document, output 'Unknown Author'. "
+        "\n"
+        "subject: A single sentence (max 200 characters) describing what the document covers. "
+        "Derive from the introduction, abstract, or opening paragraph. "
+        "\n"
+        "keywords: 5 to 10 comma-separated terms that best represent the document's topics. "
+        "Extract from headings, repeated terms, and key concepts in the body text. "
+        "\n"
+        "language: ISO 639-1 two-letter language code of the document's primary language "
+        "(e.g. 'en' for English, 'fr' for French). "
+        "\n"
+        "creation_date: The document's original creation date in ISO 8601 format (YYYY-MM-DD). "
+        "Look for a date on the cover page, in the header/footer, or in any 'Date:' or 'Published:' "
+        "field. If no date is found, output today's date. "
         "\n\n"
         "TASK B — BOOKMARK OUTLINE: "
         "Build a hierarchical bookmark outline from every heading tagged H1–H6 in the Tag Tree. "
-        "Each bookmark entry must include: title (the heading text), level (1–6), "
-        "and page_number (1-based integer). "
+        "Each entry must include: title (the heading text), level (1–6), page_number (1-based). "
         "Nest child bookmarks under their parent heading. "
         "Output format: JSON object with keys 'metadata' (object) and 'bookmarks' (array of "
         "{ title, level, page_number, children[] } objects)."
@@ -205,65 +224,76 @@ PROMPTS = {
         "as the link label and set href to the associated URL. "
         "\n\n"
         "Do not create links for numbers that are not phone numbers (e.g. page numbers, "
-        "product codes, dates). Return the updated Tag Tree JSON with all contact links inserted."
+        "product codes, dates). "
+        "\n\n"
+        "LINK QUALITY RULES (apply to every <Link> node, new or existing): "
+        "Every <Link> must have: "
+        "  1. A non-empty href attribute (mailto:, tel:, or https:// URL). "
+        "  2. A non-empty ActualText attribute containing the human-readable label for the link. "
+        "     If a <Link> wraps a <Span> or <P> with empty or whitespace-only text, "
+        "     set ActualText to the href value itself (e.g. the email address or URL). "
+        "  3. A descriptive label — never 'click here', 'here', 'link', or the bare URL as the "
+        "     only visible text when a descriptive label is available nearby. "
+        "Remove any <Link> node where both href and ActualText are empty or missing. "
+        "Return the updated Tag Tree JSON."
     ),
     "Step 7: Compliance QA": (
         "Act as an automated accessibility auditor. Run a final compliance pass over the completed "
-        "Tag Tree against WCAG 2.2 and PDF/UA specifications. Perform the following checks and "
-        "corrections in sequence: "
+        "Tag Tree against WCAG 2.2 and PDF/UA specifications. Perform all checks and corrections "
+        "in the numbered sequence below. "
         "\n\n"
         "1. SEPARATOR ARTIFACT AUDIT: "
-        "Scan the entire tag tree for any node that originated from a Separator zone "
+        "Scan the entire tag tree for any node originating from a Separator zone "
         "(horizontal rule, decorative line, dash sequence, whitespace block, ornamental glyph). "
-        "  a) If such a node is tagged as <Artifact Type=Layout Subtype=Separator> — correct, leave it. "
-        "  b) If such a node is tagged as <P>, <Div>, <Span>, or any content tag with empty or "
-        "     whitespace-only text — it was mis-tagged. Re-tag it as <Artifact Type=Layout Subtype=Separator>. "
-        "  c) If such a node is tagged as <Sect> — it was mis-tagged. "
-        "     Remove the <Sect> wrapper; re-tag the separator as <Artifact Type=Layout Subtype=Separator>. "
-        "     Preserve any heading or content children of the <Sect> in the tree at the correct level. "
-        "  d) Verify no separator node remains in the logical reading order structure — "
-        "     it must not be reachable by a screen reader's linear navigation. "
-        "Report count of separators_retagged in the qa_summary. "
+        "  a) Tagged as <Artifact Type=Layout Subtype=Separator> — correct, leave it. "
+        "  b) Tagged as <P>, <Div>, or <Span> with empty/whitespace text — re-tag as "
+        "     <Artifact Type=Layout Subtype=Separator>. "
+        "  c) Tagged as <Sect> — remove the <Sect> wrapper, re-tag separator as Artifact, "
+        "     and promote any heading/content children to the correct tree level. "
+        "  d) Confirm no separator node is reachable by a screen reader's linear navigation. "
+        "Report separators_retagged count. "
         "\n\n"
-        "2. EMPTY TAG REMOVAL: Find every tag node whose text content is null, empty string, or "
-        "contains only whitespace AND has no children. Remove these nodes entirely from the tree. "
-        "Do not remove tags that are structural containers with valid children. "
-        "EXCEPTION: <TD> and <TH> nodes with empty text content must be KEPT even if empty — "
-        "they preserve the grid structure. Never remove empty table cells. "
+        "2. EMPTY TAG REMOVAL: Find every non-table tag node where text content is null, "
+        "empty string, or whitespace-only AND it has no children. Remove these nodes. "
+        "NEVER remove <TD> or <TH> nodes — empty table cells must be kept to preserve grid structure. "
+        "NEVER remove <Link> nodes solely because their visible text is empty — handle those in check 6. "
+        "Report empty_tags_removed count. "
         "\n\n"
-        "2. TABLE CELL INTEGRITY AUDIT: For every <Table> node in the tree, verify: "
-        "  a) Every <TH> cell has a scope attribute (col, row, colgroup, or rowgroup). "
-        "     Fix: add scope=col if the cell is in the first row, scope=row if in the first column. "
-        "  b) Every <TH> cell has a unique id attribute. "
-        "     Fix: assign id=th_tableN_rowM_colK using the table, row, and column indices. "
-        "  c) Every <TD> cell has a headers attribute listing at least one <TH> id. "
-        "     Fix: infer the correct headers value from the cell's position in the grid. "
-        "  d) Every <TD> cell exists in the tag tree — count the expected cells from the grid "
-        "     dimensions (rows x columns, accounting for colspan and rowspan) and verify none "
-        "     are missing. Insert a <TD> with empty text and correct headers for any gap found. "
-        "  e) Merged cells (colspan or rowspan > 1) declare those attributes on the tag node. "
-        "     Fix: infer from visual span and add the missing attribute. "
-        "  f) Every complex table (more than one header row, or both row and column headers) "
-        "     has a Summary attribute on its <Table> tag. "
-        "     Fix: generate a one-sentence plain-language summary if missing. "
-        "Report total cells_fixed in the qa_summary. "
+        "3. TABLE CELL INTEGRITY AUDIT: For every <Table> node verify: "
+        "  a) Every <TH> has scope=col/row/colgroup/rowgroup. Fix by inferring from position. "
+        "  b) Every <TH> has a unique id (format: th_tN_rM_cK). Fix by assigning from position. "
+        "  c) Every <TD> has headers attribute referencing all applicable <TH> ids. Fix by inference. "
+        "  d) Grid is complete — expected cell count = rows × columns adjusted for spans. "
+        "     Insert <TD> with empty text and correct headers for any missing slot. "
+        "  e) Merged cells declare colspan=N and/or rowspan=N. Fix by inferring from visual span. "
+        "  f) Complex tables have Summary attribute on <Table>. Generate plain-language summary if missing. "
+        "Report cells_fixed count. "
         "\n\n"
-        "3. ALT-TEXT AUDIT: Verify every non-Artifact image node has a non-empty alt_text string. "
-        "If any are missing, flag them as alt_text_missing=True. "
+        "4. ALT-TEXT AUDIT: Every non-Artifact image node must have a non-empty alt_text string. "
+        "Flag any missing as alt_text_missing=True. "
+        "Report alt_text_missing count. "
         "\n\n"
-        "4. TABLE HEADER AUDIT: Verify every <Table> node contains at least one <TH> element "
-        "with a scope attribute. Flag any tables missing this as table_header_missing=True. "
+        "5. TABLE HEADER AUDIT: Every <Table> must have at least one <TH> with scope. "
+        "Flag tables missing this as table_header_missing=True. "
+        "Report table_headers_missing count. "
         "\n\n"
-        "5. HEADING SEQUENCE AUDIT: Walk the full heading sequence H1–H6 across the document. "
-        "Flag any instance where a heading level is skipped (e.g. H2 followed immediately by H4). "
-        "Correct by inserting a synthetic heading at the missing level with text '[Section continued]'. "
+        "6. LINK INTEGRITY AND QUALITY: For every <Link> node: "
+        "  a) Must have a non-empty href (mailto:, tel:, or URL). Remove if href is empty/missing. "
+        "  b) Must have non-empty ActualText. If ActualText is empty or missing, "
+        "     set it to the href value (e.g. the email address or URL string). "
+        "  c) If the link wraps only a <Span> or child with empty/whitespace text and no ActualText, "
+        "     set ActualText to the href value. "
+        "  d) ActualText must never be 'click here', 'here', 'link', or a bare URL when a "
+        "     descriptive label is available in surrounding content — fix if found. "
+        "Report links_removed count (links deleted) and links_repaired count (ActualText fixed). "
         "\n\n"
-        "6. LINK INTEGRITY: Verify all <Link> nodes have a non-empty href attribute. "
-        "Remove any <Link> tag that has no href and no ActualText. "
+        "7. HEADING SEQUENCE AUDIT: Walk H1–H6 across the document. "
+        "Insert synthetic heading with text '[Section continued]' at any skipped level. "
+        "Report heading_gaps_corrected count. "
         "\n\n"
         "Output the corrected, finalized, compliant JSON tag tree. Include a 'qa_summary' key "
-        "listing counts of: separators_retagged, empty_tags_removed, cells_fixed, "
-        "alt_text_missing, table_headers_missing, heading_gaps_corrected, links_removed."
+        "with counts: separators_retagged, empty_tags_removed, cells_fixed, alt_text_missing, "
+        "table_headers_missing, links_removed, links_repaired, heading_gaps_corrected."
     ),
 }
 
@@ -318,6 +348,23 @@ async def call_llm_stage(
         return json.dumps({"error": str(e)})
 
 
+def _pdf_date(iso_str: str | None) -> str:
+    """
+    Convert an ISO 8601 date string (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) to
+    PyMuPDF's required PDF date format: D:YYYYMMDDHHmmSS
+    Falls back to the current UTC datetime if the input is empty or unparseable.
+    """
+    now = datetime.datetime.utcnow()
+    if iso_str:
+        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
+            try:
+                dt = datetime.datetime.strptime(iso_str[:19], fmt)
+                return dt.strftime("D:%Y%m%d%H%M%S")
+            except ValueError:
+                continue
+    return now.strftime("D:%Y%m%d%H%M%S")
+
+
 def compile_pdf_tags(
     original_pdf_bytes: bytes,
     finalized_tag_tree: dict,
@@ -326,21 +373,30 @@ def compile_pdf_tags(
     """
     Injects accessibility metadata and bookmarks into the PDF binary.
     - metadata_bookmarks: output from Step 3.5 with keys 'metadata' and 'bookmarks'.
+    All metadata fields are guaranteed non-empty — fallbacks prevent blank entries.
     """
-    doc = open_pdf(stream=original_pdf_bytes, filetype="pdf")
+    doc  = open_pdf(stream=original_pdf_bytes, filetype="pdf")
+    orig = doc.metadata  # original doc metadata (may be empty for scanned/legacy PDFs)
 
-    # ── Metadata ─────────────────────────────────────────────────────────────
-    # Prefer AI-derived metadata from Step 3.5; fall back to original doc values.
-    ai_meta = (metadata_bookmarks or {}).get("metadata", {})
+    # ── AI-derived metadata from Step 3.5 ────────────────────────────────────
+    ai = (metadata_bookmarks or {}).get("metadata", {})
+
+    # ── Build metadata dict — AI value > original doc value > hard fallback ──
+    # PyMuPDF set_metadata() accepts exactly these 8 keys.
+    now_pdf = datetime.datetime.utcnow().strftime("D:%Y%m%d%H%M%S")
+
     meta = {
-        "title":        ai_meta.get("title")    or doc.metadata.get("title", "Remediated Accessible Document"),
-        "author":       ai_meta.get("author")   or doc.metadata.get("author", ""),
-        "subject":      ai_meta.get("subject")  or doc.metadata.get("subject", ""),
-        "keywords":     ai_meta.get("keywords") or doc.metadata.get("keywords", ""),
-        "creator":      doc.metadata.get("creator", ""),
-        "producer":     doc.metadata.get("producer", ""),
-        "creationDate": doc.metadata.get("creationDate", ""),
-        "modDate":      doc.metadata.get("modDate", ""),
+        "title":    (ai.get("title")    or orig.get("title")    or "Remediated Accessible Document").strip() or "Remediated Accessible Document",
+        "author":   (ai.get("author")   or orig.get("author")   or "Unknown Author").strip() or "Unknown Author",
+        "subject":  (ai.get("subject")  or orig.get("subject")  or "Accessible PDF document").strip() or "Accessible PDF document",
+        "keywords": (ai.get("keywords") or orig.get("keywords") or "accessible, pdf, remediated").strip() or "accessible, pdf, remediated",
+        "creator":  (orig.get("creator")  or "PDF Accessibility Studio").strip() or "PDF Accessibility Studio",
+        "producer": (orig.get("producer") or "PyMuPDF").strip() or "PyMuPDF",
+        # creationDate: use AI-derived date if present; else original if valid; else now
+        "creationDate": _pdf_date(ai.get("creation_date")) if ai.get("creation_date")
+                        else (orig.get("creationDate") or now_pdf),
+        # modDate: always set to now — this file was just remediated
+        "modDate": now_pdf,
     }
     doc.set_metadata(meta)
 
@@ -907,6 +963,7 @@ if uploaded_file:
                 "cells_fixed":             qa_summary.get("cells_fixed", "—"),
                 "heading_gaps_corrected":  qa_summary.get("heading_gaps_corrected", "—"),
                 "links_removed":           qa_summary.get("links_removed", "—"),
+                "links_repaired":          qa_summary.get("links_repaired", "—"),
             }
 
         except Exception as pipeline_error:
@@ -1037,7 +1094,8 @@ if st.session_state.result_pdf is not None:
                 "Empty tags removed",
                 "Table cells fixed (scope / id / headers / colspan / rowspan)",
                 "Heading gaps corrected",
-                "Invalid links removed",
+                "Links removed (no href)",
+                "Links repaired (ActualText fixed)",
             ],
             "Count": [
                 str(report["separators_retagged"]),
@@ -1045,5 +1103,6 @@ if st.session_state.result_pdf is not None:
                 str(report["cells_fixed"]),
                 str(report["heading_gaps_corrected"]),
                 str(report["links_removed"]),
+                str(report["links_repaired"]),
             ],
         })
