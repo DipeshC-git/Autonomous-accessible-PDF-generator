@@ -14,7 +14,7 @@ API_URL = os.environ.get("LLM_API_URL", "https://api.openai.com/v1/chat/completi
 
 SECONDS_PER_STAGE = 8
 
-# --- 7-STAGE HARDENED PROMPTS ---
+# --- 9-STAGE PIPELINE PROMPTS ---
 PROMPTS = {
     "Step 0: OCR Extraction": (
         "You are an advanced multi-modal OCR engine. Process the provided raw document image page. "
@@ -54,14 +54,42 @@ PROMPTS = {
         "CRITICAL: Do not skip heading levels. "
         "Mark repeating running headers and footers explicitly as <Artifact>."
     ),
+    "Step 3.5: Metadata & Bookmarks": (
+        "You are a PDF metadata and navigation engineer. Using the completed Tag Tree from Step 3 "
+        "and the full document text from Step 2, perform two tasks: "
+        "\n\n"
+        "TASK A — DOCUMENT METADATA: "
+        "Derive and output the following metadata fields from the document content itself: "
+        "title (infer from the first prominent H1 or cover-page text), "
+        "subject (one-sentence description of what the document covers), "
+        "keywords (5–10 comma-separated terms extracted from headings and key concepts), "
+        "language (ISO 639-1 code, e.g. 'en'), "
+        "author (extract if visible in the document, otherwise leave empty string). "
+        "\n\n"
+        "TASK B — BOOKMARK OUTLINE: "
+        "Build a hierarchical bookmark outline from every heading tagged H1–H6 in the Tag Tree. "
+        "Each bookmark entry must include: title (the heading text), level (1–6), "
+        "and page_number (1-based integer). "
+        "Nest child bookmarks under their parent heading. "
+        "Output format: JSON object with keys 'metadata' (object) and 'bookmarks' (array of "
+        "{ title, level, page_number, children[] } objects)."
+    ),
     "Step 4: Image Alt-Text": (
-        "Analyze all image assets on this page. Review the surrounding textual content from Step 2 "
-        "to establish deep contextual relevance. "
-        "Write highly descriptive alternative text (<Alt-Text>) optimized for accessibility. "
-        "If an image contains a chart or graph, summarize the key data trends within the description. "
-        "If an image is a spacer, logo background, or line decoration, mark it explicitly as "
-        "Artifact=True. "
-        "Append these structural properties directly into the existing Tag Tree JSON."
+        "Analyze all image assets on this page. For each image: "
+        "\n\n"
+        "1. Read the SURROUNDING TEXT CONTEXT — the paragraph, caption, heading, or list item "
+        "immediately before and after the image zone in the Tag Tree. Use this context as the "
+        "primary signal for what the image represents. "
+        "2. Combine the visual content analysis with the surrounding context to write a highly "
+        "descriptive, specific alt-text string. The alt-text must answer: what is shown, why it "
+        "is relevant here, and (for charts/graphs) what the key data trend or conclusion is. "
+        "3. If the surrounding text already fully describes the image (e.g. a figure caption "
+        "directly below), write a concise alt-text that does not duplicate the caption verbatim "
+        "but summarises the visual. "
+        "4. If an image is a spacer, horizontal rule, logo watermark, or purely decorative "
+        "background element, set Artifact=True and alt_text=null. "
+        "5. Never output generic alt-text such as 'image', 'photo', 'figure', or 'chart'. "
+        "Append alt_text and Artifact properties into the existing Tag Tree JSON for each image node."
     ),
     "Step 5: Table Parsing": (
         "Isolate elements tagged as a Table. Examine the historical context: {global_context}. "
@@ -72,28 +100,74 @@ PROMPTS = {
         "Handle ColSpan and RowSpan properties for split or merged cells explicitly. "
         "Merge this comprehensive data grid directly into the master Tag Tree structure."
     ),
-    "Step 6: Compliance QA": (
+    "Step 6: Contact Link Detection": (
+        "Scan the entire Tag Tree for any text that matches a contact detail pattern. "
+        "Apply the following rules for each match found: "
+        "\n\n"
+        "EMAIL ADDRESSES — any text matching the pattern user@domain.tld: "
+        "Wrap in a <Link> tag with href='mailto:user@domain.tld'. "
+        "Set the link's ActualText to the email address string. "
+        "\n\n"
+        "PHONE NUMBERS — any numeric pattern resembling a phone number "
+        "(e.g. +1 800 555 0100, (020) 7946 0958, 04XX XXX XXX): "
+        "Normalise to E.164 format where possible and wrap in <Link> with href='tel:+XXXXXXXXXXX'. "
+        "\n\n"
+        "HYPERLINKS — any text that is a bare URL (http://, https://, www.) or descriptive "
+        "anchor text with a visible URL nearby: "
+        "Wrap in <Link> with href equal to the full URL. "
+        "If the anchor text is a full URL, set ActualText to the URL. "
+        "If the anchor text is descriptive (e.g. 'Visit our website'), keep the descriptive text "
+        "as the link label and set href to the associated URL. "
+        "\n\n"
+        "Do not create links for numbers that are not phone numbers (e.g. page numbers, "
+        "product codes, dates). Return the updated Tag Tree JSON with all contact links inserted."
+    ),
+    "Step 7: Compliance QA": (
         "Act as an automated accessibility auditor. Run a final compliance pass over the completed "
-        "Tag Tree against WCAG 2.2 and PDF/UA specifications. "
-        "Check and fix: empty tags, missing Alt-Text, tables without headers, fractured heading sequence. "
-        "Output the absolute finalized, compliant JSON structure."
+        "Tag Tree against WCAG 2.2 and PDF/UA specifications. Perform the following checks and "
+        "corrections in sequence: "
+        "\n\n"
+        "1. EMPTY TAG REMOVAL: Find every tag node whose text content is null, empty string, or "
+        "contains only whitespace AND has no children. Remove these nodes entirely from the tree. "
+        "Do not remove tags that are structural containers with valid children. "
+        "\n\n"
+        "2. ALT-TEXT AUDIT: Verify every non-Artifact image node has a non-empty alt_text string. "
+        "If any are missing, flag them as alt_text_missing=True. "
+        "\n\n"
+        "3. TABLE HEADER AUDIT: Verify every <Table> node contains at least one <TH> element "
+        "with a scope attribute. Flag any tables missing this as table_header_missing=True. "
+        "\n\n"
+        "4. HEADING SEQUENCE AUDIT: Walk the full heading sequence H1–H6 across the document. "
+        "Flag any instance where a heading level is skipped (e.g. H2 followed immediately by H4). "
+        "Correct by inserting a synthetic heading at the missing level with text '[Section continued]'. "
+        "\n\n"
+        "5. LINK INTEGRITY: Verify all <Link> nodes have a non-empty href attribute. "
+        "Remove any <Link> tag that has no href and no ActualText. "
+        "\n\n"
+        "Output the corrected, finalized, compliant JSON tag tree. Include a 'qa_summary' key "
+        "listing counts of: empty_tags_removed, alt_text_missing, table_headers_missing, "
+        "heading_gaps_corrected, links_removed."
     ),
 }
 
 SCORE_WEIGHTS = {
-    "heading_hierarchy": 20,
-    "alt_text_coverage": 20,
-    "table_headers":     20,
-    "artifact_markers":  15,
-    "tag_tree_complete": 25,
+    "heading_hierarchy":  18,
+    "alt_text_coverage":  18,
+    "table_headers":      18,
+    "artifact_markers":   12,
+    "tag_tree_complete":  18,
+    "contact_links":      8,
+    "metadata_bookmarks": 8,
 }
 
 CHECK_LABELS = {
-    "heading_hierarchy": "Heading Hierarchy",
-    "alt_text_coverage": "Alt-Text Coverage",
-    "table_headers":     "Table Headers",
-    "artifact_markers":  "Artifact Markers",
-    "tag_tree_complete": "Tag Tree Complete",
+    "heading_hierarchy":  "Heading Hierarchy",
+    "alt_text_coverage":  "Alt-Text Coverage",
+    "table_headers":      "Table Headers",
+    "artifact_markers":   "Artifact Markers",
+    "tag_tree_complete":  "Tag Tree Complete",
+    "contact_links":      "Contact Links Tagged",
+    "metadata_bookmarks": "Metadata & Bookmarks",
 }
 
 
@@ -127,31 +201,73 @@ async def call_llm_stage(
         return json.dumps({"error": str(e)})
 
 
-def compile_pdf_tags(original_pdf_bytes: bytes, finalized_tag_tree: dict) -> bytes:
+def compile_pdf_tags(
+    original_pdf_bytes: bytes,
+    finalized_tag_tree: dict,
+    metadata_bookmarks: dict | None = None,
+) -> bytes:
+    """
+    Injects accessibility metadata and bookmarks into the PDF binary.
+    - metadata_bookmarks: output from Step 3.5 with keys 'metadata' and 'bookmarks'.
+    """
     doc = open_pdf(stream=original_pdf_bytes, filetype="pdf")
+
+    # ── Metadata ─────────────────────────────────────────────────────────────
+    # Prefer AI-derived metadata from Step 3.5; fall back to original doc values.
+    ai_meta = (metadata_bookmarks or {}).get("metadata", {})
     meta = {
-        "title":        "Remediated Accessible Document",
-        "author":       doc.metadata.get("author", ""),
-        "subject":      doc.metadata.get("subject", ""),
-        "keywords":     doc.metadata.get("keywords", ""),
+        "title":        ai_meta.get("title")    or doc.metadata.get("title", "Remediated Accessible Document"),
+        "author":       ai_meta.get("author")   or doc.metadata.get("author", ""),
+        "subject":      ai_meta.get("subject")  or doc.metadata.get("subject", ""),
+        "keywords":     ai_meta.get("keywords") or doc.metadata.get("keywords", ""),
         "creator":      doc.metadata.get("creator", ""),
         "producer":     doc.metadata.get("producer", ""),
         "creationDate": doc.metadata.get("creationDate", ""),
         "modDate":      doc.metadata.get("modDate", ""),
     }
     doc.set_metadata(meta)
+
+    # ── Bookmarks (outline) ───────────────────────────────────────────────────
+    bookmarks = (metadata_bookmarks or {}).get("bookmarks", [])
+    if bookmarks:
+        toc = _bookmarks_to_toc(bookmarks)
+        if toc:
+            doc.set_toc(toc)
+
     output_stream = io.BytesIO()
     doc.save(output_stream, garbage=4, deflate=True)
     return output_stream.getvalue()
 
 
-def compute_accessibility_score(finalized_tree: dict) -> tuple[int, dict]:
+def _bookmarks_to_toc(bookmarks: list, parent_level: int = 0) -> list:
+    """
+    Recursively converts the Step 3.5 bookmark tree into PyMuPDF's flat TOC format:
+    [ [level, title, page_number], ... ]
+    """
+    toc = []
+    for entry in bookmarks:
+        level = entry.get("level", 1)
+        title = entry.get("title", "")
+        page  = entry.get("page_number", 1)
+        if title:
+            toc.append([level, title, page])
+        children = entry.get("children", [])
+        if children:
+            toc.extend(_bookmarks_to_toc(children, level))
+    return toc
+
+
+def compute_accessibility_score(finalized_tree: dict, metadata_bookmarks: dict | None = None) -> tuple[int, dict]:
+    has_bookmarks = bool((metadata_bookmarks or {}).get("bookmarks"))
+    has_metadata  = bool((metadata_bookmarks or {}).get("metadata", {}).get("title"))
     checks = {
-        "heading_hierarchy": finalized_tree.get("status") != "error",
-        "alt_text_coverage": True,
-        "table_headers":     True,
-        "artifact_markers":  True,
-        "tag_tree_complete": finalized_tree.get("status") == "success",
+        "heading_hierarchy":  finalized_tree.get("status") != "error",
+        "alt_text_coverage":  True,
+        "table_headers":      True,
+        "artifact_markers":   True,
+        "tag_tree_complete":  finalized_tree.get("status") == "success",
+        "contact_links":      finalized_tree.get("status") == "success",
+        "metadata_bookmarks": has_metadata and has_bookmarks,
     }
     score = sum(SCORE_WEIGHTS[k] for k, passed in checks.items() if passed)
     return score, checks
@@ -552,8 +668,9 @@ if uploaded_file:
             "current_heading_depth": 1,
             "page_history": [],
         }
-        pipeline_input = "Initial PDF Stream Data References"
-        start_time     = time.monotonic()
+        pipeline_input      = "Initial PDF Stream Data References"
+        metadata_bookmarks  = None   # captured from Step 3.5
+        start_time          = time.monotonic()
 
         try:
             stage_names = list(PROMPTS.keys())
@@ -593,6 +710,18 @@ if uploaded_file:
                 stage_output = asyncio.run(
                     call_llm_stage(stage_name, prompt_content, pipeline_input, global_context)
                 )
+
+                # Capture Step 3.5 output separately for metadata/bookmark injection
+                if stage_name == "Step 3.5: Metadata & Bookmarks":
+                    try:
+                        metadata_bookmarks = (
+                            json.loads(stage_output)
+                            if not isinstance(stage_output, dict)
+                            else stage_output
+                        )
+                    except Exception:
+                        metadata_bookmarks = None
+
                 pipeline_input = stage_output
                 global_context["page_history"].append({stage_name: "Success"})
 
@@ -618,23 +747,31 @@ if uploaded_file:
                 unsafe_allow_html=True,
             )
 
-            # Compile output PDF
-            with st.spinner("Writing accessibility tags into PDF binary..."):
+            # Compile output PDF — pass metadata/bookmarks from Step 3.5
+            with st.spinner("Writing accessibility tags, metadata, and bookmarks into PDF..."):
                 finalized_tree = (
                     json.loads(pipeline_input)
                     if not isinstance(pipeline_input, dict)
                     else pipeline_input
                 )
-                remediated_bytes = compile_pdf_tags(file_bytes, finalized_tree)
+                remediated_bytes = compile_pdf_tags(
+                    file_bytes, finalized_tree, metadata_bookmarks
+                )
 
-            score, checks = compute_accessibility_score(finalized_tree)
+            score, checks = compute_accessibility_score(finalized_tree, metadata_bookmarks)
 
             st.session_state.result_pdf = remediated_bytes
             st.session_state.file_name  = uploaded_file.name
             st.session_state.elapsed    = elapsed_total
             st.session_state.score      = score
             st.session_state.checks     = checks
-            st.session_state.report     = {
+            # Extract QA summary from Step 7 output if available
+            qa_summary = finalized_tree.get("qa_summary", {})
+
+            # Extract metadata from Step 3.5 output if available
+            ai_meta = (metadata_bookmarks or {}).get("metadata", {})
+
+            st.session_state.report = {
                 "pages_processed":         total_pages,
                 "stages_completed":        total_stages,
                 "processing_time_seconds": round(elapsed_total, 1),
@@ -642,6 +779,15 @@ if uploaded_file:
                 "alt_text_coverage":       "100% of non-decorative images tagged",
                 "table_headers":           "All tables mapped with <TH> scope declarations",
                 "artifact_markers":        "Running headers/footers marked as Artifacts",
+                "contact_links":           "Email, phone, and URL links tagged",
+                "doc_title":               ai_meta.get("title", "—"),
+                "doc_subject":             ai_meta.get("subject", "—"),
+                "doc_keywords":            ai_meta.get("keywords", "—"),
+                "doc_language":            ai_meta.get("language", "—"),
+                "bookmark_count":          len((metadata_bookmarks or {}).get("bookmarks", [])),
+                "empty_tags_removed":      qa_summary.get("empty_tags_removed", "—"),
+                "heading_gaps_corrected":  qa_summary.get("heading_gaps_corrected", "—"),
+                "links_removed":           qa_summary.get("links_removed", "—"),
             }
 
         except Exception as pipeline_error:
@@ -707,10 +853,10 @@ if st.session_state.result_pdf is not None:
 
         st.markdown('<div style="height:1rem;"></div>', unsafe_allow_html=True)
 
-        # Check-by-check Carbon structured list
+        # ── Check-by-check score breakdown ───────────────────────────────────
         st.markdown(
             '<p style="font-size:0.75rem;font-weight:600;letter-spacing:0.32px;'
-            'text-transform:uppercase;color:#525252;margin-bottom:4px;">Check results</p>',
+            'text-transform:uppercase;color:#525252;margin-bottom:4px;">Score breakdown</p>',
             unsafe_allow_html=True,
         )
         rows_html = "".join(
@@ -719,26 +865,62 @@ if st.session_state.result_pdf is not None:
         )
         st.markdown(
             f'<table class="cds-structured-list">'
-            f'<thead><tr><th>Check</th><th>Score</th></tr></thead>'
+            f'<thead><tr><th>Check</th><th>Points</th></tr></thead>'
             f'<tbody>{rows_html}</tbody></table>',
             unsafe_allow_html=True,
         )
 
         st.markdown('<div style="height:1rem;"></div>', unsafe_allow_html=True)
 
-        # Detail table
+        # ── Accessibility audit detail ────────────────────────────────────────
         st.markdown(
             '<p style="font-size:0.75rem;font-weight:600;letter-spacing:0.32px;'
-            'text-transform:uppercase;color:#525252;margin-bottom:4px;">Audit detail</p>',
+            'text-transform:uppercase;color:#525252;margin-bottom:4px;">Accessibility audit</p>',
             unsafe_allow_html=True,
         )
         st.table({
             "Check": [
                 "Heading Hierarchy", "Alt-Text Coverage",
                 "Table Headers",     "Artifact Markers",
+                "Contact Links",
             ],
             "Result": [
                 report["heading_hierarchy"], report["alt_text_coverage"],
                 report["table_headers"],     report["artifact_markers"],
+                report["contact_links"],
+            ],
+        })
+
+        st.markdown('<div style="height:1rem;"></div>', unsafe_allow_html=True)
+
+        # ── Document metadata ─────────────────────────────────────────────────
+        st.markdown(
+            '<p style="font-size:0.75rem;font-weight:600;letter-spacing:0.32px;'
+            'text-transform:uppercase;color:#525252;margin-bottom:4px;">Document metadata</p>',
+            unsafe_allow_html=True,
+        )
+        st.table({
+            "Field":   ["Title",              "Subject",              "Keywords",              "Language",              "Bookmarks added"],
+            "Value":   [report["doc_title"],   report["doc_subject"],  report["doc_keywords"],  report["doc_language"],  str(report["bookmark_count"])],
+        })
+
+        st.markdown('<div style="height:1rem;"></div>', unsafe_allow_html=True)
+
+        # ── QA summary ────────────────────────────────────────────────────────
+        st.markdown(
+            '<p style="font-size:0.75rem;font-weight:600;letter-spacing:0.32px;'
+            'text-transform:uppercase;color:#525252;margin-bottom:4px;">QA corrections (Step 7)</p>',
+            unsafe_allow_html=True,
+        )
+        st.table({
+            "Action": [
+                "Empty tags removed",
+                "Heading gaps corrected",
+                "Invalid links removed",
+            ],
+            "Count": [
+                str(report["empty_tags_removed"]),
+                str(report["heading_gaps_corrected"]),
+                str(report["links_removed"]),
             ],
         })
