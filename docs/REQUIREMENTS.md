@@ -1,7 +1,7 @@
 # Requirements
 
 **Project:** PDF Accessibility Studio  
-**Version:** 1.0
+**Version:** 1.1 (Under Development)
 
 ---
 
@@ -14,35 +14,63 @@
 - Reject non-PDF files at the UI level
 
 ### Processing
-- Execute the 7-stage pipeline in strict sequential order
-- Display a live progress indicator showing the current stage name and number
-- Display an estimated time remaining (ETA), recalculated after each stage
-- Show a per-stage progress step list (complete / active / pending states)
+- Execute a 9-stage pipeline in strict sequential order
+- Display a live progress indicator showing stage name and number (e.g. `Stage 4 / 9`)
+- Display estimated time remaining, recalculated after each stage
+- Show a Carbon-styled per-stage step list (complete / active / pending dots)
 - Carry global context (heading depth, table continuation) across all stages
-- Handle pipeline exceptions without crashing; display a readable error notification
+- Capture Stage 3.5 output separately for metadata and bookmark injection
+- Handle pipeline exceptions without crashing; display a Carbon inline error notification
+
+### Tag tree — artifact tagging
+- Separator zones (horizontal rules, lines, dash sequences, whitespace, ornaments) tagged as `<Artifact Type=Layout Subtype=Separator>`
+- Running headers and footers tagged as `<Artifact Type=Pagination>`
+- Decorative images and backgrounds tagged as `<Artifact Type=Layout>`
+- No separator may be tagged `<P>`, `<Div>`, `<Span>`, or `<Sect>`
+
+### Tag tree — table compliance
+- Every `<TH>` must have a `scope` attribute: col / row / colgroup / rowgroup
+- Every `<TH>` must have a unique `id` attribute
+- Every `<TD>` must have a `headers` attribute referencing all applicable `<TH>` IDs
+- Empty cells must be retained as `<TD>` or `<TH>` — never dropped
+- Merged cells must declare `colspan=N` and/or `rowspan=N`
+- Multi-level stacked headers — data cells reference the full ID chain
+- Complex tables carry a `Summary` attribute on the `<Table>` tag
+- Visible captions tagged `<Caption>` as first child of `<Table>`
+
+### Tag tree — contact links
+- Email addresses wrapped in `<Link href="mailto:...">` with `ActualText`
+- Phone numbers wrapped in `<Link href="tel:+...">` normalised to E.164
+- Bare URLs and anchor text hyperlinks wrapped in `<Link href="...">`
+
+### Tag tree — image alt-text
+- Alt-text derived from surrounding text context (paragraph, caption, heading before/after)
+- Alt-text must be specific and contextual; prohibits "image", "photo", "figure", "chart"
+- Decorative images, spacers, and watermarks set `Artifact=True`, `alt_text=null`
 
 ### Output
-- Compile the finalized tag tree into the PDF binary using PyMuPDF
-- Write accessible metadata (title) into the output PDF
-- Make the output available for download immediately after processing
-- Name the output file `accessible_<original_filename>.pdf`
-- Keep the download button visible across Streamlit reruns (session state)
+- Inject AI-derived metadata (title, subject, keywords, language) via `set_metadata()`
+- Inject hierarchical bookmark outline via `set_toc()` from Stage 3.5 headings
+- Compile finalized tag tree into the PDF binary using PyMuPDF
+- Make remediated PDF available for download immediately after processing
+- Name output file `accessible_<original_filename>.pdf`
+- Keep download button visible across Streamlit reruns (session state)
 
 ### Accessibility report
-- Compute an accessibility score (0–100) from 5 weighted checks
-- Display the score with a visual bar and text label (Excellent / Good / Needs improvement / Poor)
-- Colour-code the score: green ≥ 90, amber 75–89, red < 75
-- Provide an expandable audit report with per-check results and detail table
-- Report must remain visible alongside the download button
+- Compute accessibility score (0–100) from 7 weighted checks
+- Display score with colour-coded bar and text label (Excellent / Good / Needs improvement / Poor)
+- Display four expandable sections: score breakdown, accessibility audit, document metadata, QA corrections
+- QA corrections table shows: separators retagged, empty tags removed, cells fixed, heading gaps corrected, links removed
+- Report persists alongside download button after processing
 
 ---
 
 ## Non-functional requirements
 
 ### Performance
-- Pipeline ETA estimate based on 8 seconds per stage
+- ETA estimate based on 8 seconds per stage (configurable via `SECONDS_PER_STAGE`)
 - Each LLM call has a 60-second timeout
-- PDF metadata compilation completes in under 2 seconds for files up to 50 MB
+- PDF compilation completes in under 2 seconds for files up to 50 MB
 
 ### Compatibility
 - Python 3.11+
@@ -54,11 +82,11 @@
 - UI styled to Carbon Design System v11 tokens
 - Buttons meet 48px minimum touch target height
 - Focus indicators use 2px solid `#0f62fe` (Carbon `$focus`)
-- Colour is not the sole means of conveying information (score also shows text label)
-- IBM Plex Sans font family for readability
+- Colour is not the sole conveyor of information — score shows numeric value and text label
+- IBM Plex Sans font for readability
 
 ### Security
-- LLM API key read from environment variable only; never stored in source code
+- LLM API key read from environment variable only; never in source code
 - No PDF content written to disk; all processing in-memory
 - No user data retained between sessions
 
@@ -66,6 +94,7 @@
 - Architecture supports multi-page documents; global context persists across pages
 - LLM backend is swappable via `LLM_API_URL` environment variable
 - Pipeline stages are modular; new stages can be inserted without UI changes
+- Stage 3.5 output is captured independently — metadata pipeline is decoupled from tag tree pipeline
 
 ---
 
@@ -79,11 +108,12 @@
 
 ---
 
-## Out of scope (v1.0)
+## Out of scope (v1.1)
 
 - Multi-file batch processing
-- OCR language detection (assumes English)
+- OCR language detection beyond English
 - RTL language support
 - Digital signature preservation
 - Form field accessibility (AcroForms)
 - Cloud storage integration
+- Live StructTree binary injection (metadata and bookmark injection operational; full tag tree injection is next milestone)
