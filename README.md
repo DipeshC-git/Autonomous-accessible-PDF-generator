@@ -1,6 +1,6 @@
 # PDF Accessibility Studio
 
-> **AI Builders Challenge — July 2025 · IBM Bob**
+> **AI Builders Challenge — July 2026 · IBM Bob**
 > **Theme: Design / UX / Visual Communication — AI-Powered Design & Visual Concept Tools**
 
 Designers spend hours crafting visual documents — structured layouts, clear hierarchies, tables, imagery. But when those designs are exported as PDFs, their visual language becomes invisible to millions of readers who rely on screen readers. **PDF Accessibility Studio is an AI creative partner that reads your design, understands its visual intent, and extends it to every audience — automatically.**
